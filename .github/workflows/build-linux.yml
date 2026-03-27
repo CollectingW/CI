@@ -1,7 +1,7 @@
 name: Build Citron (Linux)
 
 concurrency:
-  group: build-stable-${{ github.ref }}
+  group: build-nightly-${{ github.ref }}
   cancel-in-progress: true
 
 on:
@@ -42,7 +42,7 @@ jobs:
       - name: Check if release exists
         id: release_check
         run: |
-          if gh release view stable-linux --repo "${{ github.repository }}" > /dev/null 2>&1; then
+          if gh release view nightly-linux --repo "${{ github.repository }}" > /dev/null 2>&1; then
             echo "exists=true" >> $GITHUB_OUTPUT
             echo "Release exists"
           else
@@ -198,7 +198,7 @@ jobs:
           path: .
 
       - name: Del Previous Release
-        run: gh release delete "stable-linux" --repo "${GITHUB_REPOSITORY}" --cleanup-tag -y && sleep 5
+        run: gh release delete "nightly-linux" --repo "${GITHUB_REPOSITORY}" --cleanup-tag -y && sleep 5
         env:
           GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
         continue-on-error: true
@@ -208,8 +208,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          name: "Continuous Build (Linux Stable: ${{ steps.version.outputs.sha }})"
-          tag_name: "stable-linux"
+          name: "Continuous Build (Linux Nightly: ${{ steps.version.outputs.sha }})"
+          tag_name: "nightly-linux"
           prerelease: false
           draft: false
           generate_release_notes: false
@@ -243,7 +243,7 @@ jobs:
       - name: Post to Discord
         if: success()
         run: |
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/tag/stable-linux"
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/tag/nightly-linux"
           DATE=$(date +'%Y-%m-%d')
           WEBHOOK_URL="${{ secrets.DISCORD_WEBHOOK }}"
           if [ -z "$WEBHOOK_URL" ]; then

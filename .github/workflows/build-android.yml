@@ -383,6 +383,7 @@ jobs:
           echo "GIT_HASH=${{ needs.build-android.outputs.git_hash }}" >> $GITHUB_ENV
           echo "BRANCH_NAME=${{ needs.check-version.outputs.branch_name }}" >> $GITHUB_ENV
 
+      - name: Delete previous nightly release and tag
         run: gh release delete "nightly-android" --repo "${{ github.repository }}" --cleanup-tag -y || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

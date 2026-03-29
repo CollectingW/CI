@@ -734,7 +734,7 @@ jobs:
         run: |
           cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCITRON_USE_BUNDLED_VCPKG=OFF \
+            -DCITRON_USE_BUNDLED_VCPKG=ON \
             -DCITRON_USE_BUNDLED_QT=OFF \
             -DCITRON_USE_BUNDLED_FFMPEG=OFF \
             -DCITRON_USE_EXTERNAL_SDL2=ON \

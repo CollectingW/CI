@@ -688,10 +688,7 @@ jobs:
             mingw-w64-ucrt-x86_64-lz4
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-opus
-            mingw-w64-ucrt-x86_64-cubeb
             mingw-w64-ucrt-x86_64-libusb
-            mingw-w64-ucrt-x86_64-cpp-httplib
-            mingw-w64-ucrt-x86_64-cpp-jwt
             mingw-w64-ucrt-x86_64-openal
             git
             base-devel
@@ -750,7 +747,7 @@ jobs:
             -DENABLE_SDL2=ON \
             -DENABLE_WEB_SERVICE=ON \
             -DENABLE_OPENSSL=ON \
-            -DENABLE_CUBEB=ON \
+            -DENABLE_CUBEB=OFF \
             -DENABLE_OPENAL=ON \
             -DENABLE_LIBUSB=ON \
             -DUSE_DISCORD_PRESENCE=OFF \

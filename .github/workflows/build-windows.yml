@@ -126,8 +126,8 @@ jobs:
             sleep 15
           done
 
-      - name: Cache build directory
-        uses: actions/cache@v4
+      - name: Restore build cache
+        uses: actions/cache/restore@v4
         id: cache-build
         with:
           path: ./citron/build
@@ -172,20 +172,29 @@ jobs:
         working-directory: ./citron
         run: cmake --build build --config Release -j$(nproc)
 
+      - name: Save build cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ./citron/build
+          key: mingw-build-${{ runner.os }}-${{ hashFiles('citron/CMakeLists.txt') }}
+
       - name: Collect MSYS2 Runtime DLLs
         working-directory: ./citron
         run: |
+          set +e  # Prevent grep exit-code 1 (no matches) from killing the step
           BIN_DIR="build/bin"
           UCRT64_BIN="/ucrt64/bin"
           echo "Collecting MSYS2 runtime DLLs into $BIN_DIR..."
-          # Run 3 passes so that newly-copied DLLs also have their deps resolved
+          # Use objdump to read PE import tables directly - more reliable than ldd
+          # which misses transitive deps on Windows. 3 passes catch indirect deps.
           for pass in 1 2 3; do
             echo "Pass $pass..."
             find "$BIN_DIR" \( -name "*.exe" -o -name "*.dll" \) | while read -r binary; do
-              ldd "$binary" 2>/dev/null | grep -i "$UCRT64_BIN" | awk '{print $3}' | while read -r dep; do
-                fname=$(basename "$dep")
-                if [ -f "$dep" ] && [ ! -f "$BIN_DIR/$fname" ]; then
-                  echo "  Copying: $fname"
+              objdump -p "$binary" 2>/dev/null | grep -i "DLL Name:" | awk '{print $3}' | while read -r dll; do
+                dep="$UCRT64_BIN/$dll"
+                if [ -f "$dep" ] && [ ! -f "$BIN_DIR/$dll" ]; then
+                  echo "  Copying: $dll"
                   cp "$dep" "$BIN_DIR/"
                 fi
               done

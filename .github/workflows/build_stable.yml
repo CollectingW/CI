@@ -759,6 +759,26 @@ jobs:
         working-directory: ./citron
         run: cmake --build build --config Release -j$(nproc)
 
+      - name: Collect MSYS2 Runtime DLLs
+        working-directory: ./citron
+        run: |
+          BIN_DIR="build/bin"
+          UCRT64_BIN="/ucrt64/bin"
+          echo "Collecting MSYS2 runtime DLLs into $BIN_DIR..."
+          for pass in 1 2 3; do
+            echo "Pass $pass..."
+            find "$BIN_DIR" \( -name "*.exe" -o -name "*.dll" \) | while read -r binary; do
+              ldd "$binary" 2>/dev/null | grep -i "$UCRT64_BIN" | awk '{print $3}' | while read -r dep; do
+                fname=$(basename "$dep")
+                if [ -f "$dep" ] && [ ! -f "$BIN_DIR/$fname" ]; then
+                  echo "  Copying: $fname"
+                  cp "$dep" "$BIN_DIR/"
+                fi
+              done
+            done
+          done
+          echo "DLL collection complete."
+
       - name: Package Windows Build
         shell: pwsh
         run: |

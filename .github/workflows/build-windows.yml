@@ -185,16 +185,29 @@ jobs:
           set +e  # Prevent grep exit-code 1 (no matches) from killing the step
           BIN_DIR="build/bin"
           UCRT64_BIN="/ucrt64/bin"
-          echo "Collecting MSYS2 runtime DLLs into $BIN_DIR..."
-          # Use objdump to read PE import tables directly - more reliable than ldd
-          # which misses transitive deps on Windows. 3 passes catch indirect deps.
-          for pass in 1 2 3; do
+
+          echo "Explicitly copying known dynamic dependencies..."
+          for dll in OpenAL32.dll libvulkan-1.dll; do
+            if [ -f "$UCRT64_BIN/$dll" ] && [ ! -f "$BIN_DIR/$dll" ]; then
+              echo "  Copying: $dll"
+              cp "$UCRT64_BIN/$dll" "$BIN_DIR/"
+            fi
+          done
+
+          echo "Running windeployqt6 for Qt plugins..."
+          # We use --no-compiler-runtime because our manual loop handles MSYS2 deps better.
+          # We only want windeployqt to handle the complex Qt plugin folder structure.
+          windeployqt6 --no-compiler-runtime --no-opengl-sw --no-translations --release "$BIN_DIR/citron.exe"
+
+          echo "Collecting remaining MSYS2 runtime DLLs into $BIN_DIR..."
+          # Use objdump to read PE import tables directly. 4 passes to ensure transitive deps are caught.
+          for pass in 1 2 3 4; do
             echo "Pass $pass..."
             find "$BIN_DIR" \( -name "*.exe" -o -name "*.dll" \) | while read -r binary; do
               objdump -p "$binary" 2>/dev/null | grep -i "DLL Name:" | awk '{print $3}' | while read -r dll; do
                 dep="$UCRT64_BIN/$dll"
                 if [ -f "$dep" ] && [ ! -f "$BIN_DIR/$dll" ]; then
-                  echo "  Copying: $dll"
+                  echo "  Copying: $dll (dep of $(basename "$binary"))"
                   cp "$dep" "$BIN_DIR/"
                 fi
               done

@@ -172,6 +172,32 @@ jobs:
         working-directory: ./citron
         run: cmake --build build --config Release -j$(nproc)
 
+      - name: Collect runtime DLL dependencies
+        working-directory: ./citron
+        run: |
+          set -e
+          BIN_DIR="./build/bin"
+          if [ -d "$BIN_DIR/Release" ]; then
+            BIN_DIR="$BIN_DIR/Release"
+          fi
+
+          TARGET_EXE="$BIN_DIR/citron.exe"
+          if [ ! -f "$TARGET_EXE" ]; then
+            TARGET_EXE="$(find "$BIN_DIR" -maxdepth 1 -type f -name "*.exe" | head -n 1)"
+          fi
+
+          if [ -z "$TARGET_EXE" ] || [ ! -f "$TARGET_EXE" ]; then
+            echo "Could not find built executable in $BIN_DIR"
+            exit 1
+          fi
+
+          ldd "$TARGET_EXE" 2>/dev/null \
+            | awk '{for (i=1; i<=NF; i++) if ($i ~ /^\/.*\.dll$/) print $i}' \
+            | sort -u \
+            | while read -r dll_path; do
+                cygpath -w "$dll_path"
+              done > runtime_dlls_windows.txt
+
       - name: Package Windows Build
         shell: pwsh
         run: |
@@ -190,6 +216,17 @@ jobs:
             $destDir = Split-Path $destPath -Parent
             if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
             Copy-Item $_.FullName $destPath -Force
+          }
+
+          # Copy runtime DLLs resolved via ldd (MSYS2 + vcpkg dynamic dependencies)
+          $dllList = ".\citron\runtime_dlls_windows.txt"
+          if (Test-Path $dllList) {
+            Get-Content $dllList | ForEach-Object {
+              $dllPath = $_.Trim()
+              if ($dllPath -and (Test-Path $dllPath)) {
+                Copy-Item $dllPath ".\temp_package\" -Force
+              }
+            }
           }
 
           Compress-Archive -Path ".\temp_package\*" -DestinationPath ".\dist\Citron-windows-nightly-${{ steps.version.outputs.VERSION }}-x64-mingw.zip"

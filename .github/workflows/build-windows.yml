@@ -191,12 +191,36 @@ jobs:
             exit 1
           fi
 
+          VCPKG_BIN="$PWD/build/vcpkg_installed/x64-mingw-dynamic/bin"
+          UCRT_BIN="/ucrt64/bin"
+          : > runtime_dlls_windows.txt
+
+          # Resolve imported DLLs explicitly from known runtime locations.
+          objdump -p "$TARGET_EXE" 2>/dev/null \
+            | awk '/DLL Name:/ {print $3}' \
+            | sort -u \
+            | while read -r dll_name; do
+                found=""
+                if [ -f "$VCPKG_BIN/$dll_name" ]; then
+                  found="$VCPKG_BIN/$dll_name"
+                elif [ -f "$UCRT_BIN/$dll_name" ]; then
+                  found="$UCRT_BIN/$dll_name"
+                fi
+
+                if [ -n "$found" ]; then
+                  cygpath -w "$found" >> runtime_dlls_windows.txt
+                fi
+              done
+
+          # Include indirect/runtime-linked DLLs detected by ldd as a fallback.
           ldd "$TARGET_EXE" 2>/dev/null \
             | awk '{for (i=1; i<=NF; i++) if ($i ~ /^\/.*\.dll$/) print $i}' \
             | sort -u \
             | while read -r dll_path; do
-                cygpath -w "$dll_path"
-              done > runtime_dlls_windows.txt
+                cygpath -w "$dll_path" >> runtime_dlls_windows.txt
+              done
+
+          sort -u -o runtime_dlls_windows.txt runtime_dlls_windows.txt
 
       - name: Package Windows Build (MinGW)
         shell: pwsh
@@ -357,21 +381,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      - name: Download MinGW artifact
+      - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          name: Citron-Windows-Nightly-Mingw-x64
-          path: .
-
-      - name: Download MSVC artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: Citron-Windows-Nightly-MSVC-x64
-          path: .
+          pattern: Citron-Windows-Nightly-*
+          merge-multiple: true
+          path: ./release-artifacts
       - name: Get Version from Filename
         shell: bash
         run: |
-          FILENAME=$(ls Citron-windows-nightly-*-x64-mingw.zip)
+          FILENAME=$(basename "$(ls ./release-artifacts/Citron-windows-nightly-*-x64-mingw.zip)")
           VERSION=${FILENAME#Citron-windows-nightly-}
           VERSION=${VERSION%-x64-mingw.zip}
           echo "APP_VERSION=${VERSION}" >> $GITHUB_ENV
@@ -387,7 +406,9 @@ jobs:
           name: "Continuous Build (Windows Nightly: ${{ env.APP_VERSION }})"
           tag_name: "nightly-windows"
           prerelease: false
-          files: "*.zip"
+          files: |
+            release-artifacts/*-x64-mingw.zip
+            release-artifacts/*-x64-msvc.zip
           body: |
             **Citron Upstream Commit:** [`${{ needs.check-version.outputs.new_hash }}`](https://github.com/citron-neo/emulator/commit/${{ needs.check-version.outputs.new_hash_full }})
 

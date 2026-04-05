@@ -180,8 +180,7 @@ jobs:
         working-directory: ./citron
         run: |
           # vcpkg's DLL directory is not on the shell PATH, so CMake's deploy step
-          # and ldd both miss these DLLs entirely. Copy them explicitly into build/bin
-          # so the Package step picks them up alongside Qt/MSYS2 runtime DLLs.
+          # and ldd both miss these DLLs entirely.
           VCPKG_BIN="./build/vcpkg_installed/x64-mingw-dynamic/bin"
           BIN_DIR="./build/bin"
           if [ -d "$VCPKG_BIN" ]; then
@@ -193,37 +192,78 @@ jobs:
       - name: Prune unused DLLs from build/bin (MinGW)
         working-directory: ./citron
         run: |
-          # CopyMinGWDeps.cmake (citron's own cmake script) recursively resolves all
-          # transitive DLL dependencies of citron.exe through the UCRT64 bin directory.
-          # Since ffmpeg is installed system-wide in UCRT64, this pulls in ffmpeg's
-          # entire ~80-DLL codec dependency tree (libaom, libdav1d, libx264, libx265,
-          # librsvg, libgnutls, libcairo, libpango, libglib, and ~70 more).
-          # These codec DLLs are not directly imported by citron — ffmpeg uses them via
-          # its internal codec registration, which runs fine without them (ffmpeg simply
-          # skips unavailable codecs). Citron only needs the six core ffmpeg DLLs.
+          # CopyMinGWDeps.cmake pulls in the full transitive closure of citron.exe
+          # through /ucrt64/bin, including many DLLs that are never actually loaded.
           #
-          # We keep only DLLs matching an explicit keeplist. Everything else is removed.
+          # We compute the true required set using a full recursive objdump closure:
+          # starting from the citron binaries, we follow every DLL import reference
+          # and collect any DLL that is present in build/bin. We repeat until no
+          # new DLLs are added. Anything not reached by this walk is deleted.
+          #
+          # This is correct by construction: if Windows would load a DLL at startup
+          # (directly or transitively through another DLL we ship), it will be in
+          # the closure. If it would not be loaded, it won't be. No hardcoded lists.
 
           BIN_DIR="./build/bin"
 
           echo "=== DLLs before pruning: $(find "$BIN_DIR" -maxdepth 1 -name "*.dll" | wc -l) ==="
 
-          # Patterns matched against the DLL basename (case-insensitive prefix match).
-          # Anything NOT matching this list is deleted from build/bin.
-          KEEP_PATTERN='^(citron|legacy\.|avcodec-|avfilter-|avformat-|avutil-|swresample-|swscale-|Qt6|SDL2|OpenAL32|vulkan-1\.|libcrypto|libssl|libboost|libzlib|zlib1\.|liblz4\.|libzstd\.|libbz2|liblzma|libopus|libfmt\.|libgcc_s_seh|libstdc\+\+|libwinpthread|libfreetype|libharfbuzz|libpcre2|libpng|libiconv|libicudt|libicuin|libicuuc|libmd4c|libdouble-conversion|libb2-|libgraphite2|libbrotli)'
+          # Build a lookup of lowercase dll name -> path for every DLL in bin/
+          declare -A bin_dlls
+          while IFS= read -r dll_path; do
+            dll_name=$(basename "$dll_path" | tr '[:upper:]' '[:lower:]')
+            bin_dlls["$dll_name"]="$dll_path"
+          done < <(find "$BIN_DIR" -maxdepth 1 -name "*.dll")
 
+          # Closure: set of lowercase dll names known to be required
+          declare -A closure
+          # Queue: dll names to process
+          declare -a queue
+
+          # Seed with the citron executables
+          for exe in "$BIN_DIR"/citron.exe "$BIN_DIR"/citron-cmd.exe "$BIN_DIR"/citron-room.exe; do
+            [[ -f "$exe" ]] || continue
+            while IFS= read -r dep; do
+              dep_lower=$(echo "$dep" | tr '[:upper:]' '[:lower:]')
+              if [[ -n "${bin_dlls[$dep_lower]+_}" && -z "${closure[$dep_lower]+_}" ]]; then
+                closure["$dep_lower"]=1
+                queue+=("$dep_lower")
+              fi
+            done < <(objdump -p "$exe" 2>/dev/null | awk '/DLL Name:/{print $3}')
+          done
+
+          # BFS: expand through each newly discovered DLL in bin/
+          while [[ ${#queue[@]} -gt 0 ]]; do
+            current="${queue[0]}"
+            queue=("${queue[@]:1}")
+            dll_path="${bin_dlls[$current]}"
+            while IFS= read -r dep; do
+              dep_lower=$(echo "$dep" | tr '[:upper:]' '[:lower:]')
+              if [[ -n "${bin_dlls[$dep_lower]+_}" && -z "${closure[$dep_lower]+_}" ]]; then
+                closure["$dep_lower"]=1
+                queue+=("$dep_lower")
+              fi
+            done < <(objdump -p "$dll_path" 2>/dev/null | awk '/DLL Name:/{print $3}')
+          done
+
+          echo "Closure size: ${#closure[@]} DLLs required"
+
+          # Remove everything in bin/ that is not in the closure
           removed=0
-          while IFS= read -r dll; do
-            dll_name=$(basename "$dll")
-            if ! echo "$dll_name" | grep -qiE "$KEEP_PATTERN"; then
-              echo "  Pruning: $dll_name"
-              rm -f "$dll"
+          kept=0
+          while IFS= read -r dll_path; do
+            dll_lower=$(basename "$dll_path" | tr '[:upper:]' '[:lower:]')
+            if [[ -z "${closure[$dll_lower]+_}" ]]; then
+              echo "  Pruning: $(basename "$dll_path")"
+              rm -f "$dll_path"
               removed=$((removed + 1))
+            else
+              kept=$((kept + 1))
             fi
           done < <(find "$BIN_DIR" -maxdepth 1 -name "*.dll")
 
-          echo "=== Pruned $removed DLL(s) ==="
-          echo "=== DLLs remaining: $(find "$BIN_DIR" -maxdepth 1 -name "*.dll" | wc -l) ==="
+          echo "=== Pruned $removed, kept $kept ==="
+          echo "=== Final DLL list ==="
           find "$BIN_DIR" -maxdepth 1 -name "*.dll" | sort | xargs -I{} basename {}
 
       - name: Package Windows Build (MinGW)
@@ -232,7 +272,6 @@ jobs:
           mkdir dist
           mkdir temp_package
 
-          # Copy the built binaries (MinGW outputs to bin/ directly, not bin/Release/)
           $binDir = ".\citron\build\bin"
           if (Test-Path "$binDir\Release") { $binDir = "$binDir\Release" }
 

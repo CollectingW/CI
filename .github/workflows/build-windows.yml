@@ -97,8 +97,8 @@ jobs:
             mingw-w64-ucrt-x86_64-lz4
             mingw-w64-ucrt-x86_64-ffmpeg
             mingw-w64-ucrt-x86_64-opus
-            mingw-w64-ucrt-x86_64-libusb
             mingw-w64-ucrt-x86_64-openal
+            mingw-w64-ucrt-x86_64-libusb
             git
             base-devel
 
@@ -131,7 +131,7 @@ jobs:
         id: cache-build
         with:
           path: ./citron/build
-          key: mingw-build-${{ runner.os }}-${{ hashFiles('citron/CMakeLists.txt') }}
+          key: mingw-build-${{ runner.os }}-${{ hashFiles('citron/CMakeLists.txt') }}-${{ hashFiles('.github/workflows/build-windows.yml') }}
           restore-keys: |
             mingw-build-${{ runner.os }}-
 
@@ -142,6 +142,10 @@ jobs:
           git fetch --tags
           VERSION=$(git rev-parse --short HEAD)
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Clear stale CMake cache (MinGW)
+        working-directory: ./citron
+        run: rm -f build/CMakeCache.txt
 
       - name: Configure CMake (MinGW)
         working-directory: ./citron
@@ -163,64 +167,64 @@ jobs:
             -DENABLE_OPENSSL=ON \
             -DENABLE_CUBEB=OFF \
             -DENABLE_OPENAL=ON \
-            -DENABLE_LIBUSB=ON \
             -DUSE_DISCORD_PRESENCE=OFF \
             -DCITRON_USE_AUTO_UPDATER=OFF \
-            -DCITRON_USE_PRECOMPILED_HEADERS=ON
+            -DCITRON_USE_PRECOMPILED_HEADERS=ON \
+            -DENABLE_LIBUSB=OFF
 
       - name: Build Citron (MinGW)
         working-directory: ./citron
         run: cmake --build build --config Release -j$(nproc)
 
-      - name: Collect runtime DLL dependencies (MinGW)
+      - name: Copy vcpkg runtime DLLs to bin (MinGW)
         working-directory: ./citron
         run: |
-          set -e
+          # vcpkg's DLL directory is not on the shell PATH, so CMake's deploy step
+          # and ldd both miss these DLLs entirely. Copy them explicitly into build/bin
+          # so the Package step picks them up alongside Qt/MSYS2 runtime DLLs.
+          VCPKG_BIN="./build/vcpkg_installed/x64-mingw-dynamic/bin"
           BIN_DIR="./build/bin"
-          if [ -d "$BIN_DIR/Release" ]; then
-            BIN_DIR="$BIN_DIR/Release"
+          if [ -d "$VCPKG_BIN" ]; then
+            find "$VCPKG_BIN" -maxdepth 1 -name "*.dll" -exec cp -v {} "$BIN_DIR/" \;
+          else
+            echo "Warning: vcpkg bin dir not found at $VCPKG_BIN"
           fi
 
-          TARGET_EXE="$BIN_DIR/citron.exe"
-          if [ ! -f "$TARGET_EXE" ]; then
-            TARGET_EXE="$(find "$BIN_DIR" -maxdepth 1 -type f -name "*.exe" | head -n 1)"
-          fi
+      - name: Prune unused DLLs from build/bin (MinGW)
+        working-directory: ./citron
+        run: |
+          # CopyMinGWDeps.cmake (citron's own cmake script) recursively resolves all
+          # transitive DLL dependencies of citron.exe through the UCRT64 bin directory.
+          # Since ffmpeg is installed system-wide in UCRT64, this pulls in ffmpeg's
+          # entire ~80-DLL codec dependency tree (libaom, libdav1d, libx264, libx265,
+          # librsvg, libgnutls, libcairo, libpango, libglib, and ~70 more).
+          # These codec DLLs are not directly imported by citron — ffmpeg uses them via
+          # its internal codec registration, which runs fine without them (ffmpeg simply
+          # skips unavailable codecs). Citron only needs the six core ffmpeg DLLs.
+          #
+          # We keep only DLLs matching an explicit keeplist. Everything else is removed.
 
-          if [ -z "$TARGET_EXE" ] || [ ! -f "$TARGET_EXE" ]; then
-            echo "Could not find built executable in $BIN_DIR"
-            exit 1
-          fi
+          BIN_DIR="./build/bin"
 
-          VCPKG_BIN="$PWD/build/vcpkg_installed/x64-mingw-dynamic/bin"
-          UCRT_BIN="/ucrt64/bin"
-          : > runtime_dlls_windows.txt
+          echo "=== DLLs before pruning: $(find "$BIN_DIR" -maxdepth 1 -name "*.dll" | wc -l) ==="
 
-          # Resolve imported DLLs explicitly from known runtime locations.
-          objdump -p "$TARGET_EXE" 2>/dev/null \
-            | awk '/DLL Name:/ {print $3}' \
-            | sort -u \
-            | while read -r dll_name; do
-                found=""
-                if [ -f "$VCPKG_BIN/$dll_name" ]; then
-                  found="$VCPKG_BIN/$dll_name"
-                elif [ -f "$UCRT_BIN/$dll_name" ]; then
-                  found="$UCRT_BIN/$dll_name"
-                fi
+          # Patterns matched against the DLL basename (case-insensitive prefix match).
+          # Anything NOT matching this list is deleted from build/bin.
+          KEEP_PATTERN='^(citron|legacy\.|avcodec-|avfilter-|avformat-|avutil-|swresample-|swscale-|Qt6|SDL2|OpenAL32|vulkan-1\.|libcrypto|libssl|libboost|libzlib|zlib1\.|liblz4\.|libzstd\.|libbz2|liblzma|libopus|libfmt\.|libgcc_s_seh|libstdc\+\+|libwinpthread|libfreetype|libharfbuzz|libpcre2|libpng|libiconv|libicudt|libicuin|libicuuc|libmd4c|libdouble-conversion|libb2-|libgraphite2|libbrotli)'
 
-                if [ -n "$found" ]; then
-                  cygpath -w "$found" >> runtime_dlls_windows.txt
-                fi
-              done
+          removed=0
+          while IFS= read -r dll; do
+            dll_name=$(basename "$dll")
+            if ! echo "$dll_name" | grep -qiE "$KEEP_PATTERN"; then
+              echo "  Pruning: $dll_name"
+              rm -f "$dll"
+              removed=$((removed + 1))
+            fi
+          done < <(find "$BIN_DIR" -maxdepth 1 -name "*.dll")
 
-          # Include indirect/runtime-linked DLLs detected by ldd as a fallback.
-          ldd "$TARGET_EXE" 2>/dev/null \
-            | awk '{for (i=1; i<=NF; i++) if ($i ~ /^\/.*\.dll$/) print $i}' \
-            | sort -u \
-            | while read -r dll_path; do
-                cygpath -w "$dll_path" >> runtime_dlls_windows.txt
-              done
-
-          sort -u -o runtime_dlls_windows.txt runtime_dlls_windows.txt
+          echo "=== Pruned $removed DLL(s) ==="
+          echo "=== DLLs remaining: $(find "$BIN_DIR" -maxdepth 1 -name "*.dll" | wc -l) ==="
+          find "$BIN_DIR" -maxdepth 1 -name "*.dll" | sort | xargs -I{} basename {}
 
       - name: Package Windows Build (MinGW)
         shell: pwsh
@@ -240,17 +244,6 @@ jobs:
             $destDir = Split-Path $destPath -Parent
             if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
             Copy-Item $_.FullName $destPath -Force
-          }
-
-          # Copy runtime DLLs resolved via ldd (MSYS2 + vcpkg dynamic dependencies)
-          $dllList = ".\citron\runtime_dlls_windows.txt"
-          if (Test-Path $dllList) {
-            Get-Content $dllList | ForEach-Object {
-              $dllPath = $_.Trim()
-              if ($dllPath -and (Test-Path $dllPath)) {
-                Copy-Item $dllPath ".\temp_package\" -Force
-              }
-            }
           }
 
           Compress-Archive -Path ".\temp_package\*" -DestinationPath ".\dist\Citron-windows-nightly-${{ steps.version.outputs.VERSION }}-x64-mingw.zip"

@@ -777,6 +777,19 @@ jobs:
             echo "Warning: vcpkg bin dir not found at $VCPKG_BIN"
           fi
 
+      - name: Copy MinGW and OpenSSL DLLs to bin
+        working-directory: ./citron
+        run: |
+          BIN_DIR="./build/bin"
+          # MinGW runtime DLLs (TLS support, etc.)
+          cp -v /ucrt64/bin/libgcc_s_*.dll "$BIN_DIR/"
+          cp -v /ucrt64/bin/libstdc++-6.dll "$BIN_DIR/"
+          cp -v /ucrt64/bin/libwinpthread-1.dll "$BIN_DIR/"
+          
+          # OpenSSL DLLs (Networking, Gamebanana support)
+          cp -v /ucrt64/bin/libssl-*.dll "$BIN_DIR/"
+          cp -v /ucrt64/bin/libcrypto-*.dll "$BIN_DIR/"
+
       - name: Prune unused DLLs from build/bin
         working-directory: ./citron
         run: |
